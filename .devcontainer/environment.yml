@@ -1,0 +1,24 @@
+name: data_science_nfl_quant
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - jupyter
+  - ipykernel
+  - pytest
+  - black
+  - flake8
+  - mypy
+  - pip
+  - seaborn  # For data visualization
+  - dash
+  - dash-bootstrap-components
+  - plotly
+  - pip:
+    - streamlit
