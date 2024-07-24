@@ -22,3 +22,7 @@ dependencies:
   - plotly
   - pip:
     - streamlit
+    - nfl_data_py
+    - scikit-image
+    - opencv-python
+    - xgboost
