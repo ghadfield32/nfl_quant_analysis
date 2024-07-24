@@ -1,4 +1,5 @@
 import streamlit as st
+import matplotlib.pyplot as plt 
 import pandas as pd
 import nfl_data_py as nfl
 import plotly.express as px
@@ -24,6 +25,91 @@ from src.analysis.wr_projection import evaluate_wr_projections
 from src.analysis.player_quality import assess_player_quality
 from src.analysis.offensive_tendencies import analyze_3x1_bunch_formation
 from src.analysis.fourth_down_analysis import analyze_fourth_down_decisions
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Lasso
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+
+# Import custom functions
+from src.features.nfl_data import get_wr_data
+from src.analysis.wr_projection import evaluate_wr_projections
+from src.analysis.player_quality import assess_player_quality
+
+def calculate_advanced_metrics(df):
+    df['receiving_yards_per_game'] = df['receiving_yards'] / df['games']
+    df['receptions_per_game'] = df['receptions'] / df['games']
+    df['touchdowns_per_game'] = df['receiving_tds'] / df['games']
+    df['targets_per_game'] = df['targets'] / df['games']
+    return df
+
+def prepare_for_regression(df):
+    features = [
+        'receiving_yards_per_game', 'receptions_per_game', 'touchdowns_per_game', 
+        'targets_per_game', 'age', 'weight', 'height', 'availability'
+    ]
+    target = 'apy'
+    
+    df_clean = df.dropna(subset=features + [target])
+    
+    X = df_clean[features]
+    y = df_clean[target]
+
+    # Normalize features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+    return train_test_split(X_scaled, y, test_size=0.2, random_state=42), scaler, features
+
+def run_regression_models(X_train, X_test, y_train, y_test):
+    models = {
+        'Lasso': Lasso(alpha=0.1, random_state=42),
+        'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+        'XGBoost': XGBRegressor(n_estimators=100, random_state=42)
+    }
+    
+    results = {}
+    
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        results[name] = {'model': model, 'MSE': mse, 'R2': r2}
+    
+    return results
+
+def evaluate_player(player_name, player_data, best_model, scaler, selected_features):
+    player = player_data[player_data['name'] == player_name].iloc[-1]  # Get the most recent season data
+    
+    player_features = player[selected_features].values.reshape(1, -1)
+    player_features_scaled = scaler.transform(player_features)
+    predicted_apy = best_model.predict(player_features_scaled)[0]
+    
+    actual_apy = player['apy']
+    
+    return {
+        'player': player_name,
+        'actual_apy': actual_apy,
+        'predicted_apy': predicted_apy,
+        'difference': predicted_apy - actual_apy,
+        'features': {feature: player[feature] for feature in selected_features}
+    }
+
+def plot_player_comparison(players_data, feature):
+    plt.figure(figsize=(10, 6))
+    names = [player['player'] for player in players_data]
+    values = [player['features'][feature] for player in players_data]
+    plt.bar(names, values)
+    plt.title(f"Comparison of {feature}")
+    plt.ylabel(feature)
+    plt.tight_layout()
+    plt.savefig(f'{feature}_comparison.png')
+    plt.close()
+
 
 # Function to create a plotly line chart
 def create_line_chart(data, x, y, title):
@@ -51,11 +137,26 @@ def main():
         "Question 3: Player Quality Assessment", "Question 4: Offensive Tendencies",
         "Question 5: 4th Down Decision Making", "Question 6: Football Significance", 
         "Contracts Data"])
+    
+    # Load data
+    years = range(2013, 2024)
+    wr_data = get_wr_data(years)
+    wr_data = calculate_advanced_metrics(wr_data)
+    (X_train, X_test, y_train, y_test), scaler, selected_features = prepare_for_regression(wr_data)
+    regression_results = run_regression_models(X_train, X_test, y_train, y_test)
+
+    # Determine best model
+    best_model_name = max(regression_results, key=lambda x: regression_results[x]['R2'])
+    best_model = regression_results[best_model_name]['model']
+
 
     if page == "Question 1: Player Acquisition Value":
         st.header("Player Acquisition Value Analysis")
         st.write("What avenue of player acquisition do you think currently provides teams with the most value per dollar spend and why?")
-        st.write("""Answer: 
+        st.write("""Question: What avenue of player acquisition do you think currently provides teams with the most value per dollar spend and why?
+                              
+                                 
+                 Answer: 
         Data analysis indicates the NFL draft, especially rounds 3-7, offers the highest return on investment (ROI) in performance per dollar spent.
 
 Key Metrics:
@@ -88,14 +189,17 @@ Comparative Analysis:
 
     elif page == "Question 2: WR Projection Evaluation":
         st.header("WR Projection System Evaluation")
-        st.write("Imagine that you are tasked with evaluating the accuracy of three different college-to-pro player projection systems for wide receivers. You have both the projections and actual pro statistics for the past 10 seasons. Discuss how you would approach the problem and list any potential issues you may encounter.")
-        years = st.sidebar.multiselect("Select years", range(2014, 2024))
-        if years:
-            projections = nfl.import_seasonal_data(years)
-            actual_stats = nfl.import_seasonal_data(years)
-            results = evaluate_wr_projections(projections, actual_stats)
-            st.write(results)
+        st.write("Select players to evaluate their projected vs actual APY.")
+        
+        players = st.sidebar.multiselect("Select players", wr_data['name'].unique(), 
+                                         default=['Puka Nacua', 'CeeDee Lamb', 'Justin Jefferson'])
+
         st.write("""
+                 
+                 Question: Imagine that you are tasked with evaluating the accuracy of three different college-to-pro player projection systems for wide receivers. You have both the projections and actual pro statistics for the past 10 seasons. Discuss how you would approach the problem and list any potential issues you may encounter.
+                 
+                 
+                 Answer:
         To evaluate the accuracy of three different college-to-pro player projection systems for wide receivers, I would approach the problem as follows:
         
         1. Data Preparation:
@@ -137,30 +241,41 @@ Comparative Analysis:
         - Overfitting Concerns: If any of the projection systems have been adjusted based on past performance, they might be overfitted to historical data.
         """)
 
+        evaluated_players = []
+        for player in players:
+            evaluation = evaluate_player(player, wr_data, best_model, scaler, selected_features)
+            evaluated_players.append(evaluation)
+            st.write(f"\nEvaluation for {player}:")
+            st.write(f"  Actual APY: ${evaluation['actual_apy']:,.2f}M")
+            st.write(f"  Predicted APY: ${evaluation['predicted_apy']:,.2f}M")
+            st.write(f"  Difference: ${evaluation['difference']:,.2f}M")
+        
+        st.write("Comparison Plots:")
+        for feature in selected_features:
+            plot_player_comparison(evaluated_players, feature)
+            st.image(f'{feature}_comparison.png')
+            
+            
     elif page == "Question 3: Player Quality Assessment":
-        st.header("Player Quality Assessment")
-        st.write("Choose any active player in the NFL. How do you assess the quality of this player relative to their position group, and why? How would you value this player in terms of dollars, and how does this compare to their current contract?")
-        player_name = st.sidebar.text_input("Enter player name")
+        st.header("Receiver Quality Assessment")
+        st.write("Select a Receiver to evaluate their quality and salary.")
+        
+        player_name = st.sidebar.selectbox("Select player", wr_data['name'].unique())
         if player_name:
-            player_data = nfl.import_seasonal_rosters([2023])
-            player_info = player_data[player_data['player_name'] == player_name]
-            if not player_info.empty:
-                position_group = player_info['position'].iloc[0]
-                position_data = nfl.import_seasonal_data(range(1999, 2024))
-                position_data = position_data[position_data['position'] == position_group]
-                quality_metrics = assess_player_quality(player_info, position_data)
-                st.write(quality_metrics)
-                
-                # Display player comparison charts
-                players_to_evaluate = ['Puka Nacua', 'CeeDee Lamb', 'Justin Jefferson']
-                for feature in ['receiving_yards_per_game', 'receptions_per_game', 'touchdowns_per_game', 'targets_per_game']:
-                    plot_player_comparison([player_data], feature)
-                    st.image(f'{feature}_comparison.png')
-                
-                # Display position group comparison chart
-                st.image('position_group_comparison.png')
-                st.image('performance_percentiles.png')
-        st.write("""Answer:
+            evaluation = evaluate_player(player_name, wr_data, best_model, scaler, selected_features)
+            st.write(f"\nEvaluation for {player_name}:")
+            st.write(f"  Actual APY: ${evaluation['actual_apy']:,.2f}M")
+            st.write(f"  Predicted APY: ${evaluation['predicted_apy']:,.2f}M")
+            st.write(f"  Difference: ${evaluation['difference']:,.2f}M")
+
+            st.write("\nPlayer Stats and Percentiles:")
+            for feature in selected_features:
+                st.write(f"{feature}: {evaluation['features'][feature]:.2f}")
+        st.write("""
+                 Question: Choose any active player in the NFL. How do you assess the quality of this player relative to their position group, and why? How would you value this player in terms of dollars, and how does this compare to their current contract?
+                 
+                 
+                 Answer:
         For this question, let's focus on Justin Jefferson, using the data and visualizations from our analysis.
         
         Assessing Justin Jefferson's Quality:
@@ -206,12 +321,19 @@ Comparative Analysis:
         In conclusion, Justin Jefferson is an elite wide receiver, performing at the top tier of his position group. His consistent high-level production, young age, and durability place him among the best. His current contract significantly undervalues his contribution, typical for star players on rookie contracts. A fair market value for Jefferson could be in the $20-30M APY range.
         """)
 
+
+
+
+
     elif page == "Question 4: Offensive Tendencies":
         st.header("Offensive Tendencies Analysis")
         st.write("A defensive coach approaches you and asks for an offensive team's tendencies when they're aligned in a 3x1 bunch formation. What types of tendencies would you look for, and how would you communicate your results to the coach?")
         years = st.sidebar.multiselect("Select years", range(1999, 2024))
+        #teams = st.sidebar.selectbox("Select player", wr_data['team'].unique())
         if years:
             play_data = nfl.import_pbp_data(years)
+            #play_data = play_data[play_data['posteam'].isin([teams])]  # Filter by selected teams
+            
             tendencies, down_tendencies, situational_tendencies = analyze_3x1_bunch_formation(play_data)
             st.write(tendencies)
             
@@ -229,10 +351,12 @@ Comparative Analysis:
             plt.ylabel('Percentage')
             plt.legend(title='Play Type')
             plt.savefig('play_type_tendencies_by_down.png')
-            st.image('play_type_tendencies_by_down.png')
-        st.write("Answer: ...")
-
+            st.image('play_type_tendencies_by_down.png')        
+        
         st.write("""
+                 Question: A defensive coach approaches you and asks for an offensive team's tendencies when they're aligned in a 3x1 bunch formation. What types of tendencies would you look for, and how would you communicate your results to the coach?
+                 
+                 Answer:
         Offensive Tendencies in a 3x1 Bunch Formation
 
         Introduction:
@@ -330,41 +454,41 @@ Comparative Analysis:
 
         This detailed analysis provides a comprehensive view of the offensive tendencies when aligned in a 3x1 bunch formation. By leveraging these insights, the defensive coach can develop targeted strategies to neutralize the offensive threats and improve overall defensive performance.
         """)
+        
 
+
+        
+        
     elif page == "Question 5: 4th Down Decision Making":
         st.header("4th Down Decision Analysis")
         st.write("The head coach has a difficult decision to make on 4th down. Discuss how you would evaluate the possible options using data.")
         
-        years = st.sidebar.slider("Select years", 1999, 2024, (1999, 2024))
-        if years:
-            selected_years = range(years[0], years[1] + 1)
-            all_pbp_data = []
-            for year in selected_years:
-                try:
-                    pbp_data = nfl.import_pbp_data([year])
-                    all_pbp_data.append(pbp_data)
-                except Exception as e:
-                    st.warning(f"Data for year {year} not found and skipped.")
-            if all_pbp_data:
-                pbp_data = pd.concat(all_pbp_data)
-                decisions, success_rates = analyze_fourth_down_decisions(pbp_data)
-                
-                st.write("Success Rates Data:", success_rates)
-                
-                play_type_filter = st.sidebar.selectbox("Select play type", ["Overall", "pass", "run", "punt", "field_goal"])
-                
-                if play_type_filter != "Overall":
-                    decisions = decisions[['Season', play_type_filter.capitalize() + ' (%)']]
-                    success_rates = success_rates[['Season', play_type_filter.capitalize() + ' (%)']]
-                
-                decision_chart = create_line_chart(decisions, x='Season', y=decisions.columns[1:], title='4th Down Decisions Over Seasons')
-                st.plotly_chart(decision_chart)
-                
-                success_rate_chart = create_line_chart(success_rates, x='Season', y=success_rates.columns[1:], title='4th Down Success Rates Over Seasons')
-                st.plotly_chart(success_rate_chart)
-        st.write("Answer: ...")
-
+        years = st.sidebar.slider("Select years", 2014, 2024, (2014, 2024))
+        
+        try:
+            pbp_data = pd.read_csv('data/raw/pbp_data.csv')
+            decisions, success_rates = analyze_fourth_down_decisions(pbp_data)
+            
+            st.write("Success Rates Data:", success_rates)
+            
+            play_type_filter = st.sidebar.selectbox("Select play type", ["Overall", "pass", "run", "punt", "field_goal"])
+            
+            if play_type_filter != "Overall":
+                decisions = decisions[['Season', play_type_filter.capitalize() + ' (%)']]
+                success_rates = success_rates[['Season', play_type_filter.capitalize() + ' (%)']]
+            
+            decision_chart = create_line_chart(decisions, x='Season', y=decisions.columns[1:], title='4th Down Decisions Over Seasons')
+            st.plotly_chart(decision_chart)
+            
+            success_rate_chart = create_line_chart(success_rates, x='Season', y=success_rates.columns[1:], title='4th Down Success Rates Over Seasons')
+            st.plotly_chart(success_rate_chart)
+            
+        except Exception as e:
+            st.error(f"Error loading data: {e}")
         st.write("""
+                 Question: The head coach has a difficult decision to make on 4th down. Discuss how you would evaluate the possible options using data.
+                 
+                 Answer:
         When a head coach faces a 4th down decision, they must quickly assess multiple factors to determine the best course of action. Data-driven analysis can provide valuable insights to inform this decision-making process. Here's how you might approach evaluating the options using data:
 
         1. Understand the Current Situation
@@ -434,14 +558,25 @@ Comparative Analysis:
         - [4th Down Model - Bruin Sports Analytics](https://www.bruinsportsanalytics.com/post/4th-down-model)
         """)
 
+            
+            
+            
+                
+
     elif page == "Question 6: Football Significance":
         st.header("Football Significance")
         st.write("Why does football matter to you?")
         st.write("""
-        Football has always been a profound passion of mine because it embodies teamwork, perseverance, and the pursuit of excellence. What fascinates me most is how every individual, regardless of their background or circumstances, can contribute to a team's success. Stories like Tom Brady's rise from being an overlooked draft pick to becoming one of the greatest quarterbacks, Ray Lewis's embodiment of spirit and leadership, and Kurt Warner's incredible journey from stocking shelves to Super Bowl champion, inspire me deeply.
+            Question: Why does football matter to you?
+                    
+            Answer: 
+            Football has always been a profound passion of mine because it embodies teamwork, perseverance, and the pursuit of excellence. What fascinates me most is how every individual, regardless of their background or circumstances, can contribute to a team's success. Stories like Tom Brady's rise from being an overlooked draft pick to becoming one of the greatest quarterbacks, Ray Lewis's embodiment of spirit and leadership, and Kurt Warner's incredible journey from stocking shelves to Super Bowl champion, inspire me deeply.
 
-        The Philadelphia Eagles, with their rich history and dedicated fan base, epitomize these values. Their journey, filled with triumphs and challenges, resonates with my belief in resilience and unity. I aspire to contribute to the Eagles' success by revolutionizing sports analytics, aiming to provide insights that can drive strategic decisions and elevate the team's performance. My dream is to be a part of a championship-winning team, knowing that my efforts, no matter how small, helped make a difference. Together, I believe we can achieve greatness.
+            The Philadelphia Eagles, with their rich history and dedicated fan base, epitomize these values. Their journey, filled with triumphs and challenges, resonates with my belief in resilience and unity. I aspire to contribute to the Eagles' success by revolutionizing sports analytics, aiming to provide insights that can drive strategic decisions and elevate the team's performance. My dream is to be a part of a championship-winning team, knowing that my efforts, no matter how small, helped make a difference. Together, I believe we can achieve greatness.
         """)
+        
+        st.image("data/raw/brady_comeback.jpg", caption="Tom Brady's Comeback", use_column_width=True)
+        st.image("data/raw/foles_mvp.jpg", caption="Nick Foles MVP", use_column_width=True)
 
     elif page == "Contracts Data":
         st.header("Contracts Data")
