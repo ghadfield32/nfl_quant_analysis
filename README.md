@@ -1,4 +1,6 @@
-NFL Data Analysis
+### NFL Data Analysis
+
+streamlit app: https://nfl-quant-analysis.streamlit.app/
 
 This repository contains a comprehensive suite of tools and analyses for exploring NFL data, with a focus on player performance, offensive tendencies, and decision-making. The main feature is a Streamlit app that allows users to interactively explore these insights.
 Table of Contents
